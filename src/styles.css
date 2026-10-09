@@ -1,0 +1,143 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--card);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--background);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--primary);
+  --color-surface: var(--surface);
+  --color-surface-foreground: var(--foreground);
+  --color-xp: var(--xp);
+  --color-locked: var(--locked);
+  --color-danger: var(--danger);
+  --color-boss: var(--boss);
+  --color-success: var(--success);
+  --font-display: "Anton", Impact, sans-serif;
+  --font-sans: "Inter", Arial, sans-serif;
+  --font-editorial: "Lora", Georgia, serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --radius: 0.125rem;
+}
+:root {
+  --radius: 0.125rem;
+  --background: #f7f7f3;
+  --foreground: #111211;
+  --card: #ffffff;
+  --surface: #ffffff;
+  --primary: #e9ba63;
+  --primary-foreground: #111211;
+  --secondary: #9b88b8;
+  --muted: #e8e8e2;
+  --muted-foreground: #5b5c59;
+  --accent: #91b9ad;
+  --destructive: #9f493d;
+  --border: #c9cac4;
+  --xp: #866018;
+  --locked: #777873;
+  --danger: #9f493d;
+  --boss: #76528e;
+  --success: #347261;
+  --gradient-primary: linear-gradient(120deg, var(--primary), var(--primary));
+  --gradient-xp: linear-gradient(90deg, var(--primary), var(--xp));
+  --shadow-glow: 6px 6px 0 var(--foreground);
+  --shadow-boss: 6px 6px 0 var(--boss);
+  --shadow-panel: none;
+}
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+  ::selection {
+    background: var(--primary);
+    color: var(--foreground);
+  }
+}
+@utility panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+@utility glow-primary {
+  box-shadow: var(--shadow-glow);
+}
+@utility glow-boss {
+  box-shadow: var(--shadow-boss);
+}
+@utility text-gradient {
+  color: var(--foreground);
+}
+@utility hero-glow {
+  background: var(--secondary);
+}
+@utility starfield {
+  background: var(--background);
+}
+@utility label-xs {
+  font-family: var(--font-sans);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+@utility node-pulse {
+  animation: node-pulse 2.4s ease-in-out infinite;
+}
+@utility rise-in {
+  animation: rise-in 0.5s ease-out both;
+}
+@keyframes node-pulse {
+  50% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--primary) 20%, transparent);
+  }
+}
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

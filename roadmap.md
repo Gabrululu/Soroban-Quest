@@ -1,0 +1,3 @@
+- [x] Apply the selected Stellar editorial design across home, dashboard, map, quests, inventory, skills, ranks, and shared elements.
+- [x] Check desktop and mobile presentation and fix any regressions.
+- [x] Present user-facing copy in neutral Spanish while keeping brand names, commands and necessary technical terms in English.

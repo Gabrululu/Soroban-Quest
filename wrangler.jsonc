@@ -1,0 +1,32 @@
+// Cloudflare Worker config. Nitro merges this into .output/server/wrangler.json on `pnpm build`
+// (main, assets and no_bundle are set by Nitro and ignored here).
+{
+  "name": "soroban-quest",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Single-use wallet challenges (and, later, player progress). Create it with:
+  //   pnpm exec wrangler d1 create soroban-quest
+  // paste the returned database_id below, then apply the schema:
+  //   pnpm exec wrangler d1 migrations apply QUEST_DB --remote
+  "d1_databases": [
+    {
+      "binding": "QUEST_DB",
+      "database_name": "soroban-quest",
+      "database_id": "REEMPLAZAR_CON_EL_ID_DE_D1",
+      "migrations_dir": "migrations",
+    },
+  ],
+
+  // Per-IP limit for verification server functions (20 calls per minute).
+  // namespace_id is any integer you choose, unique within your Cloudflare account.
+  "ratelimits": [
+    { "name": "VERIFY_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+  ],
+
+  // Public build-time values live in .env (VITE_*). Secrets are set with:
+  //   pnpm exec wrangler secret put SOROBAN_QUEST_SECRET
+  //   pnpm exec wrangler secret put SENTRY_DSN
+  "vars": {},
+}
