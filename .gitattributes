@@ -1,0 +1,18 @@
+# Keep LF everywhere (matches Prettier) regardless of each machine's core.autocrlf.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets: never touch line endings or diff them as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gif binary
+*.webp binary
+*.wasm binary
+*.woff binary
+*.woff2 binary

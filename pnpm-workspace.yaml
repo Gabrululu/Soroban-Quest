@@ -13,3 +13,6 @@ allowBuilds:
   utf-8-validate: false
   secp256k1: false
   "@reown/appkit": false
+  # The sentry-cli binary arrives as a per-platform optional dependency; its postinstall is only
+  # a download fallback.
+  "@sentry/cli": false

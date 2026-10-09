@@ -9,9 +9,27 @@ type SentryModule = typeof import("@sentry/cloudflare");
 // chunk, where the bundler emits a circular helper import that crashes the Worker at startup.
 let sentryModule: Promise<SentryModule> | undefined;
 
+/**
+ * Bad input, not bugs: malformed server-function payloads, unknown function IDs (scanners) and
+ * failed input validation. They still return 500, but reporting them would only burn quota.
+ */
+function isClientInputError(error: unknown): boolean {
+  for (let e = error, depth = 0; e instanceof Error && depth < 5; e = e.cause, depth++) {
+    if (e.name === "ZodError") return true;
+    if (/^Seroval Error|^Server function info not found/.test(e.message)) return true;
+  }
+  return false;
+}
+
 function reportServerError(error: unknown) {
+  if (isClientInputError(error)) return;
   void sentryModule?.then((Sentry) => Sentry.captureException(error));
 }
+
+// Lets the server-function middleware in src/start.ts (also bundled for the browser) report
+// errors without importing this server-only module.
+(globalThis as { __reportServerError?: typeof reportServerError }).__reportServerError =
+  reportServerError;
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -77,7 +95,7 @@ const app = {
   },
 };
 
-type WorkerEnv = { SENTRY_DSN?: string };
+type WorkerEnv = { SENTRY_DSN?: string; SENTRY_ENVIRONMENT?: string };
 type WorkerHandler = Parameters<SentryModule["withSentry"]>[1];
 
 let monitored: typeof app | undefined;
@@ -92,7 +110,12 @@ export default {
     if (env?.SENTRY_DSN && ctx?.waitUntil) {
       const Sentry = await (sentryModule ??= import("@sentry/cloudflare"));
       monitored ??= Sentry.withSentry(
-        (e: WorkerEnv) => ({ dsn: e.SENTRY_DSN, tracesSampleRate: 0 }),
+        // No server tracing: it costs Worker CPU and the verifications already sit near the limit.
+        (e: WorkerEnv) => ({
+          dsn: e.SENTRY_DSN,
+          environment: e.SENTRY_ENVIRONMENT ?? "production",
+          tracesSampleRate: 0,
+        }),
         app as unknown as WorkerHandler,
       ) as unknown as typeof app;
       return monitored.fetch(request, env, ctx);

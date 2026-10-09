@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { AppShell } from "@/components/game/AppShell";
 import { XpBar } from "@/components/game/XpBar";
 import { useProgress } from "@/lib/game/progress";
-import { LEADERBOARD } from "@/lib/game/leaderboard";
+import { getLeaderboard } from "@/lib/stellar.functions";
 import { INVENTORY_CATALOG } from "@/lib/game/inventory";
 import { SKILL_BRANCHES } from "@/lib/game/skill-tree";
 
@@ -21,11 +21,13 @@ export const Route = createFileRoute("/dashboard")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
+  loader: () => getLeaderboard({ data: { limit: 5 } }),
   component: Dashboard,
 });
 
 function Dashboard() {
   const { state, level, currentQuest, completedCount } = useProgress();
+  const leaders = Route.useLoaderData();
   const ownedIds = new Set(state.items.map((i) => i.id));
   return (
     <AppShell>
@@ -95,18 +97,23 @@ function Dashboard() {
                   Ver clasificación ↗
                 </Link>
               </div>
-              {LEADERBOARD.length ? (
+              {leaders.length ? (
                 <ol className="space-y-2">
-                  {LEADERBOARD.slice(0, 5).map((row, i) => (
+                  {leaders.map((row, i) => (
                     <li
-                      key={row.builder}
+                      key={row.address}
                       className="flex items-baseline justify-between gap-2 border-b border-border/60 pb-2 text-sm"
                     >
                       <span className="truncate">
                         <span className="mr-3 font-display text-xl text-xp">
                           {String(i + 1).padStart(2, "0")}
                         </span>
-                        {row.builder}
+                        <span className="font-mono" title={row.address}>
+                          {row.address.slice(0, 4)}…{row.address.slice(-4)}
+                        </span>
+                        {row.address === state.address && (
+                          <span className="ml-2 text-xs text-xp">(tú)</span>
+                        )}
                       </span>
                       <span className="font-semibold">{row.xp.toLocaleString()}</span>
                     </li>

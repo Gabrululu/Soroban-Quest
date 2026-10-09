@@ -14,7 +14,7 @@
     {
       "binding": "QUEST_DB",
       "database_name": "soroban-quest",
-      "database_id": "REEMPLAZAR_CON_EL_ID_DE_D1",
+      "database_id": "8b2b7782-4c25-4c9e-8f5b-8155a3e5d256",
       "migrations_dir": "migrations",
     },
   ],

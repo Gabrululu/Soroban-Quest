@@ -1,12 +1,13 @@
 import { getRequestHeader } from "@tanstack/react-start/server";
 
 /** Minimal shapes of the Cloudflare bindings declared in wrangler.jsonc. */
-interface D1Statement {
+export interface D1Statement {
   bind(...values: unknown[]): D1Statement;
   run(): Promise<{ meta: { changes: number } }>;
+  all<T>(): Promise<{ results: T[] }>;
 }
 
-interface D1Database {
+export interface D1Database {
   prepare(sql: string): D1Statement;
   batch(statements: D1Statement[]): Promise<{ meta: { changes: number } }[]>;
 }
@@ -27,6 +28,15 @@ function cloudflareEnv(): CloudflareEnv {
   return (globalThis as { __env__?: CloudflareEnv }).__env__ ?? {};
 }
 
+/** The D1 binding, or undefined in local dev (callers fall back to memory). */
+export function questDatabase(): D1Database | undefined {
+  const db = cloudflareEnv().QUEST_DB;
+  if (!db && import.meta.env.PROD) {
+    throw new Error("Falta el binding de D1 QUEST_DB (revisa wrangler.jsonc).");
+  }
+  return db;
+}
+
 /** Secrets and vars: Worker bindings in production, process.env in local dev. */
 export function envVar(name: "SOROBAN_QUEST_SECRET" | "SENTRY_DSN"): string | undefined {
   return cloudflareEnv()[name] ?? process.env[name];
@@ -45,12 +55,9 @@ const memoryClaims = new Map<string, number>(); // key -> expiry (ms); one proce
 export async function claimOnce(key: string, ttlSeconds: number): Promise<boolean> {
   const now = Date.now();
   const expiresAt = now + ttlSeconds * 1000;
-  const db = cloudflareEnv().QUEST_DB;
+  const db = questDatabase();
 
   if (!db) {
-    if (import.meta.env.PROD) {
-      throw new Error("Falta el binding de D1 QUEST_DB (revisa wrangler.jsonc).");
-    }
     for (const [k, exp] of memoryClaims) if (exp < now) memoryClaims.delete(k);
     if (memoryClaims.has(key)) return false;
     memoryClaims.set(key, expiresAt);

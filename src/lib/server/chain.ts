@@ -1,15 +1,10 @@
 import {
-  Account,
-  Asset,
-  Contract,
-  Keypair,
-  Networks,
-  TransactionBuilder,
-  rpc,
-  scValToNative,
-  xdr,
-} from "@stellar/stellar-sdk";
-import { decodeStrKey, deriveContractId } from "@/lib/stellar/strkey";
+  decodeStrKey,
+  deriveAssetContractId,
+  deriveContractId,
+  encodeStrKey,
+} from "@/lib/stellar/strkey";
+import { decodeScVal, invokeContractEnvelope, type ScArg } from "@/lib/stellar/xdr";
 
 export const HORIZON = "https://horizon-testnet.stellar.org";
 export const SOROBAN_RPC = "https://soroban-testnet.stellar.org";
@@ -73,12 +68,19 @@ interface HorizonOperation {
   asset_balance_changes?: { type: string; from?: string; to?: string; amount: string }[] | null;
 }
 
-/** How far back in the player's history we look (200 operations per page). */
-const MAX_HISTORY_PAGES = 5;
+/**
+ * Small pages: a 200-operation Horizon page is ~115 KB of JSON, and parsing several of them was the
+ * main Worker CPU risk for accounts with long histories. Most lookups stop on the first page.
+ */
+const HISTORY_PAGE_SIZE = 50;
+const MAX_HISTORY_PAGES = 20; // up to 1 000 operations
 
 /** Walk the player's operations, newest first, until `visit` returns true. */
-async function scanOperations(address: string, visit: (op: HorizonOperation) => boolean) {
-  let url = `/accounts/${address}/operations?order=desc&limit=200`;
+async function scanOperations(
+  address: string,
+  visit: (op: HorizonOperation) => boolean | Promise<boolean>,
+) {
+  let url = `/accounts/${address}/operations?order=desc&limit=${HISTORY_PAGE_SIZE}`;
   for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
     const body = await horizon<{
       _embedded?: { records?: HorizonOperation[] };
@@ -86,47 +88,72 @@ async function scanOperations(address: string, visit: (op: HorizonOperation) => 
     }>(url);
     const records = body?._embedded?.records ?? [];
     for (const op of records) {
-      if (op.transaction_successful !== false && visit(op)) return;
+      if (op.transaction_successful !== false && (await visit(op))) return;
     }
     const next = body?._links?.next?.href;
-    if (records.length < 200 || !next) return;
+    if (records.length < HISTORY_PAGE_SIZE || !next) return;
     url = next;
   }
 }
 
 export interface Deployment {
-  hash: string;
   createdAt: string;
-  ledger: number;
+  /** Known when found through Horizon. */
+  hash?: string;
+  ledger?: number;
+}
+
+const STELLAR_EXPERT = "https://api.stellar.expert/explorer/testnet";
+
+/**
+ * stellar.expert indexes every contract's creator: one ~1 KB request instead of walking the
+ * player's history. Only ever used to accept; any other answer falls back to Horizon, so an outage
+ * or indexing delay there can't reject a legitimate deployment.
+ */
+async function creatorFromStellarExpert(
+  contractId: string,
+): Promise<{ creator: string; created: number } | null> {
+  try {
+    const res = await fetch(`${STELLAR_EXPERT}/contract/${contractId}`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { creator?: string; created?: number };
+    return body.creator && body.created ? { creator: body.creator, created: body.created } : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * The create-contract operation, sent by the player, that produced `contractId`. Horizon reports
- * the deployer and salt, from which the contract ID is derived. Factory deployments don't show up.
+ * Proof that `address` deployed `contractId`: stellar.expert's index first, then the
+ * create-contract operation in the player's Horizon history (deployer + salt derive the ID).
  */
 export async function findDeployment(
   address: string,
   contractId: string,
 ): Promise<Deployment | null> {
-  const candidates: HorizonOperation[] = [];
-  await scanOperations(address, (op) => {
-    if (
-      op.type === "invoke_host_function" &&
-      op.function?.includes("CreateContract") &&
-      op.address === address &&
-      op.salt
-    ) {
-      candidates.push(op);
-    }
-    return false;
-  });
-  for (const op of candidates) {
-    if ((await deriveContractId(address, op.salt!)) === contractId) {
-      const tx = await horizon<{ ledger: number }>(`/transactions/${op.transaction_hash}`);
-      return { hash: op.transaction_hash, createdAt: op.created_at, ledger: tx?.ledger ?? 0 };
-    }
+  const indexed = await creatorFromStellarExpert(contractId);
+  if (indexed?.creator === address) {
+    return { createdAt: new Date(indexed.created * 1000).toISOString() };
   }
-  return null;
+
+  let found: Deployment | null = null;
+  await scanOperations(address, async (op) => {
+    if (
+      op.type !== "invoke_host_function" ||
+      !op.function?.includes("CreateContract") ||
+      op.address !== address ||
+      !op.salt ||
+      (await deriveContractId(address, op.salt)) !== contractId
+    ) {
+      return false;
+    }
+    const tx = await horizon<{ ledger: number }>(`/transactions/${op.transaction_hash}`);
+    found = { hash: op.transaction_hash, createdAt: op.created_at, ledger: tx?.ledger ?? 0 };
+    return true;
+  });
+  return found;
 }
 
 /** Token movements into / out of `contractId` in operations the player sent (deposit, release…). */
@@ -154,26 +181,37 @@ export interface ContractEvent {
   account: string | undefined;
 }
 
-function decodeTopic(value: string | undefined): unknown {
-  if (!value) return undefined;
-  try {
-    return scValToNative(xdr.ScVal.fromXDR(value, "base64"));
-  } catch {
-    return undefined;
-  }
-}
+const decodeTopic = (value: string | undefined): unknown =>
+  value ? decodeScVal(value) : undefined;
 
 const isStrKey = (v: unknown): v is string => typeof v === "string" && /^[GC][A-Z2-7]{55}$/.test(v);
 
 /** RPC scans at most ~10k ledgers per call, so the retention window takes a dozen pages. */
 const MAX_EVENT_PAGES = 15;
 
+/**
+ * Ledgers close every ~5-6 s; assuming 4 s overestimates how many closed since the deployment, so
+ * the estimated start lands before it and no early event is missed.
+ */
+const MIN_SECONDS_PER_LEDGER = 4;
+
 export async function contractEvents(
   contractId: string,
-  fromLedger: number,
-): Promise<{ events: ContractEvent[]; oldestLedger: number }> {
-  const health = await rpcCall<{ latestLedger: number; oldestLedger: number }>("getHealth");
-  const startLedger = Math.max(fromLedger, health.oldestLedger);
+  deployment: Deployment,
+): Promise<{ events: ContractEvent[]; olderThanRetention: boolean }> {
+  const health = await rpcCall<{
+    latestLedger: number;
+    latestLedgerCloseTime: string;
+    oldestLedger: number;
+  }>("getHealth");
+  const deployedLedger =
+    deployment.ledger ??
+    health.latestLedger -
+      Math.ceil(
+        (Number(health.latestLedgerCloseTime) - Date.parse(deployment.createdAt) / 1000) /
+          MIN_SECONDS_PER_LEDGER,
+      );
+  const startLedger = Math.max(deployedLedger, health.oldestLedger);
   const events: ContractEvent[] = [];
   let cursor: string | undefined;
 
@@ -200,12 +238,20 @@ export async function contractEvents(
     const scannedTo = cursor ? Number(BigInt(cursor.split("-")[0] ?? "0") >> 32n) : Infinity;
     if (!cursor || scannedTo >= health.latestLedger) break;
   }
-  return { events, oldestLedger: health.oldestLedger };
+  return { events, olderThanRetention: deployedLedger < health.oldestLedger };
 }
 
 // ---------------------------------------------------------------------------
 // Simulation (free, never submitted)
 // ---------------------------------------------------------------------------
+
+/**
+ * A fresh, unused account address. Simulations only need an address, not a key pair, and
+ * Keypair.random() costs several ms of Worker CPU (pure-JS ed25519 key generation).
+ */
+export function randomAccountAddress(): string {
+  return encodeStrKey("account", crypto.getRandomValues(new Uint8Array(32)));
+}
 
 export type SimulationOutcome = { ok: true; value: unknown } | { ok: false; error: string };
 
@@ -217,27 +263,24 @@ export type SimulationOutcome = { ok: true; value: unknown } | { ok: false; erro
 export async function simulateCall(
   contractId: string,
   fn: string,
-  args: xdr.ScVal[],
+  args: ScArg[],
   options: { source?: string; authMode?: "enforce" | "record" } = {},
 ): Promise<SimulationOutcome> {
-  const source = new Account(options.source ?? Keypair.random().publicKey(), "0");
-  const tx = new TransactionBuilder(source, { fee: "100", networkPassphrase: Networks.TESTNET })
-    .addOperation(new Contract(contractId).call(fn, ...args))
-    .setTimeout(60)
-    .build();
-  let sim: rpc.Api.SimulateTransactionResponse;
-  try {
-    sim = await new rpc.Server(SOROBAN_RPC).simulateTransaction(
-      tx,
-      undefined,
-      options.authMode ?? "record",
-    );
-  } catch (error) {
-    throw new NetworkUnavailable(error instanceof Error ? error.message : "simulación");
-  }
-  if (rpc.Api.isSimulationError(sim)) return { ok: false, error: sim.error };
-  const retval = rpc.Api.isSimulationSuccess(sim) ? sim.result?.retval : undefined;
-  return { ok: true, value: retval ? scValToNative(retval) : undefined };
+  const transaction = invokeContractEnvelope(
+    options.source ?? randomAccountAddress(),
+    contractId,
+    fn,
+    args,
+  );
+  // Raw RPC call that reads only the error and the return value: decoding the rest of the
+  // simulation (events, footprint, state changes) is what made this the most CPU-hungry check.
+  const result = await rpcCall<{ error?: string; results?: { xdr?: string }[] }>(
+    "simulateTransaction",
+    { transaction, authMode: options.authMode ?? "record" },
+  );
+  if (result.error) return { ok: false, error: result.error };
+  const retval = result.results?.[0]?.xdr;
+  return { ok: true, value: retval ? decodeScVal(retval) : undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +312,7 @@ export async function issuedAssetBySac(
     `/assets?asset_issuer=${issuer}&limit=200`,
   );
   for (const record of body?._embedded?.records ?? []) {
-    const sac = new Asset(record.asset_code, record.asset_issuer).contractId(Networks.TESTNET);
+    const sac = await deriveAssetContractId(record.asset_code, record.asset_issuer);
     if (sac !== contractId) continue;
     const amounts = [
       ...Object.values(record.balances),

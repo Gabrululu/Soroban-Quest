@@ -10,7 +10,16 @@ export function initClientMonitoring() {
     Sentry.init({
       dsn,
       environment: import.meta.env.MODE,
-      tracesSampleRate: 0,
+      integrations: [
+        Sentry.browserTracingIntegration(),
+        // Text and form fields are masked by default; wallet addresses never leave as text.
+        Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true }),
+      ],
+      // Sampled to stay inside the free plan: 10 % of page loads traced, and a replay only
+      // when a session hits an error.
+      tracesSampleRate: 0.1,
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 1.0,
     });
     return Sentry;
   });

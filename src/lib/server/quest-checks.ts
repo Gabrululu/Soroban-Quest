@@ -1,4 +1,3 @@
-import { Address, Keypair, nativeToScVal } from "@stellar/stellar-sdk";
 import type { Quest } from "@/lib/quests/types";
 import type { VerifyResult } from "@/lib/stellar.functions";
 import {
@@ -6,6 +5,7 @@ import {
   contractExists,
   findDeployment,
   issuedAssetBySac,
+  randomAccountAddress,
   simulateCall,
   tokenFlows,
   type Deployment,
@@ -92,7 +92,7 @@ export async function checkContractQuest(
     );
   }
   const deployed = {
-    "Transacción de despliegue": `${deployment.hash.slice(0, 10)}…`,
+    ...(deployment.hash && { "Transacción de despliegue": `${deployment.hash.slice(0, 10)}…` }),
     Desplegado: day(deployment.createdAt),
   };
 
@@ -145,7 +145,7 @@ async function checkEvents(
   deployment: Deployment,
   details: Record<string, string>,
 ): Promise<VerifyResult> {
-  const { events, oldestLedger } = await contractEvents(contractId, deployment.ledger);
+  const { events, olderThanRetention } = await contractEvents(contractId, deployment);
   const missing: string[] = [];
   const counts: Record<string, string> = {};
 
@@ -161,10 +161,9 @@ async function checkEvents(
   }
 
   if (missing.length) {
-    const history =
-      deployment.ledger < oldestLedger
-        ? " Solo vemos los eventos de los últimos 7 días: si fueron antes, repite la interacción."
-        : "";
+    const history = olderThanRetention
+      ? " Solo vemos los eventos de los últimos 7 días: si fueron antes, repite la interacción."
+      : "";
     return fail(`El contrato es tuyo, pero todavía falta: ${missing.join("; ")}.${history}`);
   }
   return {
@@ -184,9 +183,9 @@ async function checkExploitSuite(
   address: string,
   details: Record<string, string>,
 ): Promise<VerifyResult> {
-  const owner = new Address(address).toScVal();
-  const attacker = new Address(Keypair.random().publicKey()).toScVal();
-  const amount = (n: bigint) => nativeToScVal(n, { type: "i128" });
+  const owner = { address };
+  const attacker = { address: randomAccountAddress() };
+  const amount = (n: bigint) => ({ i128: n });
 
   const balance = await simulateCall(contractId, "balance", [owner], { source: address });
   if (!balance.ok || typeof balance.value !== "bigint") {

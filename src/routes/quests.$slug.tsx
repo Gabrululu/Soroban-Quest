@@ -45,8 +45,16 @@ export const Route = createFileRoute("/quests/$slug")({
 
 function QuestPage() {
   const { quest } = Route.useLoaderData();
-  const { state, statusOf, hintsUsed, revealHint, completeQuest, proofUsedBy, setAddress } =
-    useProgress();
+  const {
+    state,
+    statusOf,
+    hintsUsed,
+    revealHint,
+    completeQuest,
+    syncCompleted,
+    proofUsedBy,
+    setAddress,
+  } = useProgress();
   const status = statusOf(quest.slug);
 
   const verify = useServerFn(verifyQuest);
@@ -79,6 +87,8 @@ function QuestPage() {
   function onAccountResult(res: VerifyResult, address: string) {
     if (res.ok && res.token) setAddress(address, res.token);
     finish(res, address);
+    // Quests this account already completed elsewhere (another device or browser).
+    if (res.ok && res.completed) syncCompleted(res.completed);
   }
 
   async function runVerification() {

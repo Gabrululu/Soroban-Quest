@@ -4,8 +4,10 @@ import { allowVerification, claimOnce, envVar } from "@/lib/server/runtime";
 import { verifyMessageSignature } from "@/lib/stellar/signature";
 import { isValidStrKey } from "@/lib/stellar/strkey";
 import { getQuest } from "@/lib/quests/data";
+import type { Quest } from "@/lib/quests/types";
 import { HORIZON, NetworkUnavailable } from "@/lib/server/chain";
 import { checkContractQuest, checkPayment } from "@/lib/server/quest-checks";
+import { progressStore, type LeaderboardEntry } from "@/lib/server/progress-store";
 
 export interface VerifyResult {
   ok: boolean;
@@ -13,6 +15,8 @@ export interface VerifyResult {
   details?: Record<string, string>;
   /** Session token returned by verifyAccount; later verifications require it. */
   token?: string;
+  /** Quests this account has completed on the server (returned with the session). */
+  completed?: string[];
 }
 
 const accountAddress = z
@@ -153,11 +157,14 @@ export const verifyAccount = createServerFn({ method: "POST" })
     if (!(await claimOnce(`challenge:${nonce}`, CHALLENGE_TTL_MS / 1000))) {
       return { ok: false, message: "Este reto ya se usó. Genera uno nuevo y fírmalo." };
     }
+    const store = progressStore();
+    await store.record(data.address, "arrival", data.address, getQuest("arrival")?.rewards.xp ?? 0);
     return {
       ok: true,
       message: "Firma válida: la cuenta es tuya y tiene fondos en la red de pruebas.",
       details: { Cuenta: short(data.address), Saldo: `${balance.toFixed(2)} XLM` },
       token: await sessionToken(data.address),
+      completed: await store.completedSlugs(data.address),
     };
   });
 
@@ -182,33 +189,84 @@ export const verifyQuest = createServerFn({ method: "POST" })
     const quest = getQuest(data.slug);
     if (!quest || quest.comingSoon) return { ok: false, message: "Esa misión no existe." };
 
-    try {
-      if (quest.verification.type === "WALLET_CONNECTED") {
-        return { ok: false, message: "Esta misión se verifica firmando con tu billetera." };
-      }
-      if (quest.verification.type === "TRANSACTION_EXISTS") {
-        if (!/^[a-fA-F0-9]{64}$/.test(data.proof)) {
-          return {
-            ok: false,
-            message: "El hash de la transacción debe tener 64 caracteres hexadecimales.",
-          };
-        }
-        return await checkPayment(data.proof.toLowerCase(), data.address);
-      }
-      if (!/^C[A-Z2-7]{55}$/.test(data.proof) || !isValidStrKey("contract", data.proof)) {
-        return {
-          ok: false,
-          message: "El ID del contrato debe comenzar con C, tener 56 caracteres y estar completo.",
-        };
-      }
-      return await checkContractQuest(quest, data.proof, data.address);
-    } catch (error) {
-      if (error instanceof NetworkUnavailable) {
-        return {
-          ok: false,
-          message: "La red de pruebas no respondió a tiempo. Inténtalo de nuevo en un momento.",
-        };
-      }
-      throw error;
+    // Progress lives on the server: prerequisites are enforced here, not only in the browser.
+    const store = progressStore();
+    const done = new Set(await store.completedSlugs(data.address));
+    const missing = quest.prerequisites.find((p) => !done.has(p));
+    if (missing) {
+      return {
+        ok: false,
+        message: `Primero completa la misión «${getQuest(missing)?.title ?? missing}».`,
+      };
     }
+
+    const result = await runQuestCheck(quest, data.proof, data.address);
+    if (!result.ok) return result;
+    const proof =
+      quest.verification.type === "TRANSACTION_EXISTS" ? data.proof.toLowerCase() : data.proof;
+    const outcome = await store.record(data.address, quest.slug, proof, quest.rewards.xp);
+    if (outcome === "proof-used") {
+      return {
+        ok: false,
+        message:
+          "Ese comprobante ya completó otra de tus misiones. Cada misión necesita uno propio.",
+      };
+    }
+    return result;
+  });
+
+/** Run the on-chain check for `quest`; network outages become a "try again" result. */
+async function runQuestCheck(quest: Quest, proof: string, address: string): Promise<VerifyResult> {
+  try {
+    if (quest.verification.type === "WALLET_CONNECTED") {
+      return { ok: false, message: "Esta misión se verifica firmando con tu billetera." };
+    }
+    if (quest.verification.type === "TRANSACTION_EXISTS") {
+      if (!/^[a-fA-F0-9]{64}$/.test(proof)) {
+        return {
+          ok: false,
+          message: "El hash de la transacción debe tener 64 caracteres hexadecimales.",
+        };
+      }
+      return await checkPayment(proof.toLowerCase(), address);
+    }
+    if (!/^C[A-Z2-7]{55}$/.test(proof) || !isValidStrKey("contract", proof)) {
+      return {
+        ok: false,
+        message: "El ID del contrato debe comenzar con C, tener 56 caracteres y estar completo.",
+      };
+    }
+    return await checkContractQuest(quest, proof, address);
+  } catch (error) {
+    if (error instanceof NetworkUnavailable) {
+      return {
+        ok: false,
+        message: "La red de pruebas no respondió a tiempo. Inténtalo de nuevo en un momento.",
+      };
+    }
+    throw error;
+  }
+}
+
+const progressSchema = z.object({ address: accountAddress, token: z.string().min(1) });
+
+/** Quests the signed-in account has completed on the server, to sync another device. */
+export const getMyProgress = createServerFn({ method: "POST" })
+  .validator((data: unknown) => progressSchema.parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean; completed: string[] }> => {
+    if (!(await hasValidSession(data.address, data.token))) return { ok: false, completed: [] };
+    return { ok: true, completed: await progressStore().completedSlugs(data.address) };
+  });
+
+/** Leaderboard reads scan the whole table, so each isolate reuses a result for a short while. */
+const LEADERBOARD_TTL_MS = 30_000;
+let leaderboardCache: { at: number; rows: LeaderboardEntry[] } | undefined;
+
+export const getLeaderboard = createServerFn({ method: "GET" })
+  .validator((data: unknown) => z.object({ limit: z.number().int().min(1).max(50) }).parse(data))
+  .handler(async ({ data }): Promise<LeaderboardEntry[]> => {
+    if (!leaderboardCache || Date.now() - leaderboardCache.at > LEADERBOARD_TTL_MS) {
+      leaderboardCache = { at: Date.now(), rows: await progressStore().leaderboard(50) };
+    }
+    return leaderboardCache.rows.slice(0, data.limit);
   });

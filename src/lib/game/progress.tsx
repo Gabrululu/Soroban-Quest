@@ -10,6 +10,8 @@ import {
 } from "react";
 import { QUESTS, getQuest } from "@/lib/quests/data";
 import type { Quest, QuestStatus } from "@/lib/quests/types";
+import { useServerFn } from "@tanstack/react-start";
+import { getMyProgress } from "@/lib/stellar.functions";
 import { levelProgress } from "./levels";
 
 const STORAGE_KEY = "soroban-quest:progress:v1";
@@ -66,6 +68,8 @@ interface ProgressContextValue {
   setUsername: (name: string) => void;
   setAddress: (address: string, token: string) => void;
   completeQuest: (slug: string, proof: string) => CompletionSummary | null;
+  /** Apply quests the server says this account already completed (another device, etc.). */
+  syncCompleted: (slugs: string[]) => void;
   /** Quest (other than `exceptSlug`) already completed with this proof, if any. */
   proofUsedBy: (proof: string, exceptSlug?: string) => Quest | undefined;
   currentQuest: Quest | undefined;
@@ -75,6 +79,39 @@ interface ProgressContextValue {
 }
 
 const ProgressContext = createContext<ProgressContextValue | null>(null);
+
+/** Mark `quest` completed in `prev`, granting its XP, item and achievement once. */
+function applyCompletion(
+  prev: ProgressState,
+  quest: Quest,
+  entry: { proof?: string; completedAt: string },
+): ProgressState {
+  if (prev.quests[quest.slug]?.status === "COMPLETED") return prev;
+  const { achievement, item } = quest.rewards;
+  const type = quest.verification.type;
+  return {
+    ...prev,
+    xp: prev.xp + quest.rewards.xp,
+    transactionsVerified: prev.transactionsVerified + (type === "TRANSACTION_EXISTS" ? 1 : 0),
+    contractsDeployed:
+      prev.contractsDeployed +
+      (type !== "TRANSACTION_EXISTS" && type !== "WALLET_CONNECTED" ? 1 : 0),
+    quests: {
+      ...prev.quests,
+      [quest.slug]: {
+        status: "COMPLETED",
+        hintsUsed: prev.quests[quest.slug]?.hintsUsed ?? 0,
+        ...(entry.proof !== undefined && { proof: entry.proof }),
+        completedAt: entry.completedAt,
+      },
+    },
+    achievements:
+      achievement && !prev.achievements.some((a) => a.id === achievement.id)
+        ? [...prev.achievements, { ...achievement, at: entry.completedAt }]
+        : prev.achievements,
+    items: item && !prev.items.some((i) => i.id === item.id) ? [...prev.items, item] : prev.items,
+  };
+}
 
 function loadState(): ProgressState {
   if (typeof window === "undefined") return INITIAL;
@@ -167,29 +204,9 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
 
     const hints = current.quests[slug]?.hintsUsed ?? 0;
     const { achievement, item } = quest.rewards;
-    const completedAt = new Date().toISOString();
-
-    setState((prev) => {
-      if (prev.quests[slug]?.status === "COMPLETED") return prev;
-      return {
-        ...prev,
-        xp: prev.xp + quest.rewards.xp,
-        transactionsVerified:
-          prev.transactionsVerified + (quest.verification.type === "TRANSACTION_EXISTS" ? 1 : 0),
-        contractsDeployed:
-          prev.contractsDeployed + (quest.verification.type === "CONTRACT_EXISTS" ? 1 : 0),
-        quests: {
-          ...prev.quests,
-          [slug]: { status: "COMPLETED", hintsUsed: hints, proof, completedAt },
-        },
-        achievements:
-          achievement && !prev.achievements.some((a) => a.id === achievement.id)
-            ? [...prev.achievements, { ...achievement, at: completedAt }]
-            : prev.achievements,
-        items:
-          item && !prev.items.some((i) => i.id === item.id) ? [...prev.items, item] : prev.items,
-      };
-    });
+    setState((prev) =>
+      applyCompletion(prev, quest, { proof, completedAt: new Date().toISOString() }),
+    );
 
     return {
       quest,
@@ -201,6 +218,35 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
       hintsUsed: hints,
     };
   }, []);
+
+  const syncCompleted = useCallback((slugs: string[]) => {
+    const completedAt = new Date().toISOString();
+    setState((prev) =>
+      slugs.reduce((next, slug) => {
+        const quest = getQuest(slug);
+        return quest ? applyCompletion(next, quest, { completedAt }) : next;
+      }, prev),
+    );
+  }, []);
+
+  // The server is the source of truth: pull this account's completions once per session, so
+  // progress follows the account across devices. A rejected token means the player must sign again.
+  const fetchProgress = useServerFn(getMyProgress);
+  const { address, addressToken } = state;
+  useEffect(() => {
+    if (!hydrated || !address || !addressToken) return;
+    let cancelled = false;
+    fetchProgress({ data: { address, token: addressToken } })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok) syncCompleted(res.completed);
+        else setState(({ addressToken: _expired, ...rest }) => rest);
+      })
+      .catch(() => {}); // offline: keep local progress
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, address, addressToken, fetchProgress, syncCompleted]);
 
   const value = useMemo<ProgressContextValue>(() => {
     const completedCount = Object.values(state.quests).filter(
@@ -225,13 +271,14 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
       setAddress: (address: string, addressToken: string) =>
         setState((p) => ({ ...p, address, addressToken })),
       completeQuest,
+      syncCompleted,
       proofUsedBy,
       currentQuest,
       completedCount,
       reset: () => setState({ ...INITIAL, lastActiveDay: today() }),
       hydrated,
     };
-  }, [state, statusOf, revealHint, completeQuest, proofUsedBy, hydrated]);
+  }, [state, statusOf, revealHint, completeQuest, syncCompleted, proofUsedBy, hydrated]);
 
   return <ProgressContext.Provider value={value}>{children}</ProgressContext.Provider>;
 }

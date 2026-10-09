@@ -109,3 +109,29 @@ export async function deriveContractId(
   ]);
   return encodeStrKey("contract", await sha256(preimage));
 }
+
+/**
+ * Stellar Asset Contract ID of a classic asset CODE:ISSUER:
+ * sha256(XDR HashIDPreimage{ ENVELOPE_TYPE_CONTRACT_ID, networkID, ContractIDPreimage::FROM_ASSET(asset) }).
+ */
+export async function deriveAssetContractId(
+  code: string,
+  issuer: string,
+  passphrase = TESTNET_PASSPHRASE,
+): Promise<string> {
+  const networkId = await sha256(new TextEncoder().encode(passphrase));
+  const int32 = (n: number) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const alphanum4 = code.length <= 4;
+  const codeBytes = new Uint8Array(alphanum4 ? 4 : 12);
+  codeBytes.set(new TextEncoder().encode(code));
+  const preimage = Uint8Array.from([
+    ...int32(8), // EnvelopeType.ENVELOPE_TYPE_CONTRACT_ID
+    ...networkId,
+    ...int32(1), // ContractIDPreimageType.FROM_ASSET
+    ...int32(alphanum4 ? 1 : 2), // AssetType.CREDIT_ALPHANUM4 / CREDIT_ALPHANUM12
+    ...codeBytes,
+    ...int32(0), // PublicKeyType.ED25519
+    ...decodeStrKey("account", issuer),
+  ]);
+  return encodeStrKey("contract", await sha256(preimage));
+}

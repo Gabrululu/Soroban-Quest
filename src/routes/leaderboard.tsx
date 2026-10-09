@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { AppShell } from "@/components/game/AppShell";
-import { LEADERBOARD } from "@/lib/game/leaderboard";
+import { getLeaderboard } from "@/lib/stellar.functions";
 import { useProgress } from "@/lib/game/progress";
 import { levelFromXp } from "@/lib/game/levels";
 
@@ -21,12 +21,16 @@ export const Route = createFileRoute("/leaderboard")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
+  loader: () => getLeaderboard({ data: { limit: 50 } }),
   component: Leaderboard,
 });
 
+const shortAddress = (address: string) => `${address.slice(0, 4)}…${address.slice(-4)}`;
+
 function Leaderboard() {
+  const rows = Route.useLoaderData();
   const { state, completedCount, level } = useProgress();
-  const rows = [...LEADERBOARD].sort((a, b) => b.xp - a.xp);
+  const myRank = rows.findIndex((r) => r.address === state.address);
 
   return (
     <AppShell>
@@ -49,11 +53,17 @@ function Leaderboard() {
             </thead>
             <tbody>
               {rows.map((row, i) => (
-                <tr key={row.builder} className="border-b border-border">
+                <tr
+                  key={row.address}
+                  className={`border-b border-border ${i === myRank ? "bg-primary/20" : ""}`}
+                >
                   <td className="px-4 py-4 font-display text-3xl text-xp">
                     {String(i + 1).padStart(2, "0")}
                   </td>
-                  <td className="px-4 py-4 font-semibold">{row.builder}</td>
+                  <td className="px-4 py-4 font-mono font-semibold" title={row.address}>
+                    {shortAddress(row.address)}
+                    {i === myRank && <span className="ml-2 font-sans text-xs text-xp">(tú)</span>}
+                  </td>
                   <td className="px-4 py-4 text-muted-foreground">{levelFromXp(row.xp)}</td>
                   <td className="px-4 py-4 font-display text-xl">{row.xp.toLocaleString()}</td>
                   <td className="px-4 py-4">{row.quests}</td>
@@ -62,6 +72,11 @@ function Leaderboard() {
               ))}
             </tbody>
           </table>
+          <p className="mt-4 text-xs text-muted-foreground">
+            Solo cuentan misiones verificadas por el servidor en la red de pruebas. Se actualiza
+            cada 30 segundos.
+            {state.address && myRank === -1 && " Firma «La llegada» para aparecer aquí."}
+          </p>
         </div>
       ) : (
         <section className="mt-12 grid gap-10 border-t border-foreground pt-8 lg:grid-cols-12">
@@ -93,8 +108,8 @@ function Leaderboard() {
               ))}
             </dl>
             <p className="mt-4 text-xs text-muted-foreground">
-              Por ahora tu progreso se guarda solo en este navegador. La clasificación pública
-              llegará cuando el progreso se registre en el servidor.
+              Aparecerás aquí cuando firmes «La llegada» con tu billetera: desde ese momento cada
+              misión verificada suma a la clasificación pública.
             </p>
           </aside>
         </section>
